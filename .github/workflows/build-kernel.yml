@@ -1,0 +1,57 @@
+name: build-kernel
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "config/**"
+      - "patches/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain plan
+        run: |
+          echo "kernel: 7.0.14-sdm660 (sdm660-mainline/linux tag v7.0.14-sdm660)"
+          echo "builder: alpine:edge, clang23 (kCFI hashes depend on the exact compiler)"
+
+      - name: Build inside Alpine
+        run: |
+          mkdir -p out
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e KBUILD_BUILD_USER=ci \
+            -e KBUILD_BUILD_HOST=github-actions \
+            alpine:edge sh /work/scripts/build.sh
+
+      - name: Summary
+        run: |
+          {
+            echo "## kernel 7.0.14-sdm660"
+            echo
+            echo '```'
+            ls -l out/vmlinuz out/dtbs/qcom/sdm660-xiaomi-lavender-*.dtb 2>/dev/null || true
+            find out/modroot -name 'msm.ko*' -exec sha256sum {} \; 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload kernel + modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-7.0.14-sdm660
+          path: |
+            out/vmlinuz
+            out/vmlinuz.efi
+            out/System.map
+            out/dtbs/qcom/sdm660-xiaomi-lavender-shenchao.dtb
+            out/modroot/usr/lib/modules
+          if-no-files-found: error
+          retention-days: 30

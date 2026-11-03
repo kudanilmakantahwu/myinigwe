@@ -1,0 +1,74 @@
+From: Fabricio Akio <fabricioakio@gmail.com>
+Subject: [PATCH] drm/msm/a5xx: Write CP_RB_WPTR under the ring's preempt_lock
+
+CP_RB_WPTR tells the CP how far the ring has been filled. Two functions
+write it: a5xx_flush(), after a submit is added to the ring, and
+update_wptr(), which a5xx_preempt_trigger() calls from the IRQ handler
+each time a submit completes, whenever there is more than one ring,
+even when no ring switch follows. Both read the ring's wptr holding
+ring->preempt_lock, but write the register after releasing it, so the
+two writes can land in the wrong order:
+
+   CPU A, IRQ:   update_wptr() reads wptr N
+   CPU B, flush: a5xx_flush() reads wptr N+1, writes N+1
+   CPU A, IRQ:   update_wptr() writes N
+
+CP_RB_WPTR then points behind the last submit. If the CP has already
+read past N, it treats the ring as nearly full and executes the
+commands left over from its previous pass through the ring. This shows
+up as CP opcode errors, and the old submits write old fences, so the
+fence in memptrs goes backwards. Recovery then finds no submit to
+blame and does not reset the GPU, which stays hung until reboot.
+
+Write the register before releasing the lock in both places, so the
+last value written is always the newest, as a6xx_flush() does.
+
+Fixes: b1fc2839d2f9 ("drm/msm: Implement preemption for A5XX targets")
+Signed-off-by: Fabricio Akio <fabricioakio@gmail.com>
+Tested-by: Alexey Minnekhanov <alexeymin@alexey.ru>
+---
+ drivers/gpu/drm/msm/adreno/a5xx_gpu.c     | 10 +++++++---
+ drivers/gpu/drm/msm/adreno/a5xx_preempt.c |  3 +--
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/adreno/a5xx_gpu.c b/drivers/gpu/drm/msm/adreno/a5xx_gpu.c
+index 16c7335c4b1f..63b313328979 100644
+--- a/drivers/gpu/drm/msm/adreno/a5xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a5xx_gpu.c
+@@ -53,14 +53,18 @@ void a5xx_flush(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
+ 	/* Make sure to wrap wptr if we need to */
+ 	wptr = get_wptr(ring);
+ 
+-	spin_unlock_irqrestore(&ring->preempt_lock, flags);
+-
+ 	/* Make sure everything is posted before making a decision */
+ 	mb();
+ 
+-	/* Update HW if this is the current ring and we are not in preempt */
++	/*
++	 * Update HW if this is the current ring and we are not in preempt.
++	 * Under the lock, so that update_wptr() cannot write an older wptr
++	 * after this one.
++	 */
+ 	if (a5xx_gpu->cur_ring == ring && !a5xx_in_preempt(a5xx_gpu))
+ 		gpu_write(gpu, REG_A5XX_CP_RB_WPTR, wptr);
++
++	spin_unlock_irqrestore(&ring->preempt_lock, flags);
+ }
+ 
+ static void a5xx_submit_in_rb(struct msm_gpu *gpu, struct msm_gem_submit *submit)
+diff --git a/drivers/gpu/drm/msm/adreno/a5xx_preempt.c b/drivers/gpu/drm/msm/adreno/a5xx_preempt.c
+index e4924b5e1c48..0deac58bc22e 100644
+--- a/drivers/gpu/drm/msm/adreno/a5xx_preempt.c
++++ b/drivers/gpu/drm/msm/adreno/a5xx_preempt.c
+@@ -47,9 +47,8 @@ static inline void update_wptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
+ 
+ 	spin_lock_irqsave(&ring->preempt_lock, flags);
+ 	wptr = get_wptr(ring);
+-	spin_unlock_irqrestore(&ring->preempt_lock, flags);
+-
+ 	gpu_write(gpu, REG_A5XX_CP_RB_WPTR, wptr);
++	spin_unlock_irqrestore(&ring->preempt_lock, flags);
+ }
+ 
+ /* Return the highest priority ringbuffer with something in it */
