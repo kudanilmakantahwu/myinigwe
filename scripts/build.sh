@@ -64,7 +64,7 @@ make -j"$(nproc)" ARCH=arm64 LLVM=1 \
 
 echo "== install modules =="
 make ARCH=arm64 LLVM=1 \
-	INSTALL_MOD_PATH="$OUT/modroot" \
+	INSTALL_MOD_PATH="$OUT/modroot/usr" \
 	INSTALL_MOD_STRIP=1 \
 	modules_install
 
@@ -73,7 +73,7 @@ make ARCH=arm64 LLVM=1 INSTALL_DTBS_PATH="$OUT/dtbs" dtbs_install
 
 echo "== depmod (guard against empty dependency lists) =="
 MODDIR="$OUT/modroot/usr/lib/modules/${KVER}-sdm660"
-depmod -b "$OUT/modroot" "${KVER}-sdm660"
+depmod -b "$OUT/modroot/usr" "${KVER}-sdm660"
 grep -E 'ath10k_snoc\.ko[^:]*: .*ath10k_core\.ko' "$MODDIR/modules.dep" \
 	&& echo "depmod OK" \
 	|| { echo "ERROR: modules.dep incomplete (empty deps)" >&2; exit 1; }
