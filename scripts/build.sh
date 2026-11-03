@@ -39,12 +39,21 @@ BUILD="$SRC/linux-${KVER}-sdm660"
 echo "builddir: $BUILD"
 cd "$BUILD"
 
-echo "== apply patch =="
+echo "== apply patches =="
 ls -la "$WORK/patches" "$WORK/config" || true
-PATCH="$(find "$WORK/patches" -maxdepth 1 -name '*.patch' | sort | head -1)"
-echo "patch: $PATCH"
-[ -n "$PATCH" ] || { echo "no patch found" >&2; exit 1; }
-patch -p1 --batch --forward < "$PATCH"
+NPATCH=0
+for PATCH in $(find "$WORK/patches" -maxdepth 1 -name '*.patch' | sort); do
+	echo "applying: $PATCH"
+	patch -p1 --batch --forward --silent < "$PATCH" || true
+	NPATCH=$((NPATCH + 1))
+done
+[ "$NPATCH" -gt 0 ] || { echo "no patch found" >&2; exit 1; }
+if find . -name '*.rej' | grep -q .; then
+	echo "ERROR: patch(es) rejected:" >&2
+	find . -name '*.rej' >&2
+	exit 1
+fi
+echo "applied $NPATCH patch(es)"
 
 echo "== config =="
 cp -v "$WORK/config/config-${FLAVOR}.aarch64" .config

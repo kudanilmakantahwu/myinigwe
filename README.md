@@ -10,19 +10,46 @@ Semua build dijalankan di dalam container `alpine:edge` (lewat `docker run`), ja
 | --- | --- |
 | `scripts/build.sh` | Script build utama (jalan di dalam `alpine:edge`) |
 | `config/config-postmarketos-qcom-sdm660.aarch64` | Kernel config dari pmaports (`device/testing/linux-postmarketos-qcom-sdm660`) |
-| `patches/0001-drm-msm-a5xx-write-cp-rb-wptr-under-preempt-lock.patch` | Patch perbaikan GPU hang a5xx (Adreno 512) |
+| `patches/0001-drm-msm-a5xx-write-cp-rb-wptr-under-preempt-lock.patch` | Patch race `CP_RB_WPTR` pada a5xx (Adreno 512) |
+| `patches/0002-drm-msm-a5xx-reset-gpu-on-resume.patch` | **Patch utama**: reset GPU saat resume (fix hang `rptr/wptr = 23/C` di SDM660) |
 | `.github/workflows/build-kernel.yml` | Workflow GitHub Actions |
 
 ## Kenapa patch ini
 
+Ada **dua** bug a5xx yang berbeda tapi gejalanya mirip. Yang cocok dengan
+`xiaomi-lavender` adalah patch **0002**.
+
+### 0002 — GPU hang saat resume (`rptr/wptr = 23/C`) — akar masalah di sini
+
+Di SDM630/SDM660/MSM8998, power domain **GX** ikut ke SMMU GPU, bukan ke GPU
+itu sendiri. Jadi GX bisa **tetap hidup** walau GPU sudah di-suspend. GPU yang
+resume dengan GX masih hidup menyimpan state-nya, termasuk read pointer (RPTR)
+CP di ringbuffer. `a5xx_hw_init()` lalu me-rewind ringbuffer dan menulis
+`CP_ME_INIT` di awal, sedangkan CP melanjutkan dari posisi lamanya → mengeksekusi
+isi ringbuffer lama → CP opcode error dan hang yang tidak pernah pulih:
+
+```
+[drm:adreno_idle] timeout waiting to drain ringbuffer 0 rptr/wptr = 23/C
+CP | opcode error | possible opcode=0x00000000
+[drm:a5xx_irq] gpu fault ring 0 fence ffffff00 status 800001C1 rb 007a/000c
+```
+
+Fix: software-reset GPU di `a5xx_pm_resume()` supaya setiap resume mulai dari
+kondisi reset, lalu ambil ulang baseline busy-counter devfreq
+(`msm_devfreq_resample_busy()`).
+
+Sumber: Fabricio Akio, FROMLIST, commit `be8062b9b0` di
+`sdm660-mainline/linux` (belum ada di tag `v7.0.14-sdm660`).
+
+### 0001 — race penulisan `CP_RB_WPTR`
+
 `CP_RB_WPTR` ditulis dari dua tempat: `a5xx_flush()` (submit baru) dan
 `update_wptr()` (dipanggil IRQ handler saat submit selesai). Keduanya membaca
 wptr di bawah `ring->preempt_lock`, tapi menulis register **setelah** lock
-dilepas, sehingga dua penulisan bisa terjadi dengan urutan terbalik. Akibatnya
-`CP_RB_WPTR` menunjuk ke belakang submit terakhir → CP opcode error → fence
-mundur → GPU hang permanen sampai reboot.
-
-Patch memindahkan penulisan register ke **dalam** lock.
+dilepas, sehingga dua penulisan bisa terjadi dengan urutan terbalik → wptr
+mundur. Patch memindahkan penulisan register ke **dalam** lock. Terbukti
+membantu di A508 (SDM630), **tidak cukup** untuk lavender (A512) — makanya
+patch 0002 tetap diperlukan.
 
 ## Cara pakai
 
