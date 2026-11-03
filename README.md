@@ -41,6 +41,34 @@ Patch memindahkan penulisan register ke **dalam** lock.
    fastboot flash boot boot-7.0.14-sdm660.img
    ```
 
+## Cacat yang perlu diwaspadai: `modules.dep` kosong
+
+Tree modul hasil build pmbootstrap (`linux-postmarketos-qcom-sdm660`) bisa ikut
+terpasang dengan **`modules.dep` yang dependency-nya kosong** — semua baris
+berakhiran `:` tanpa daftar modul. Akibatnya `modprobe` tidak memuat dependency,
+contohnya `ath10k_snoc` di-`insmod` sendirian lalu gagal dengan
+`Unknown symbol ath10k_core_*` → **WiFi tidak muncul sama sekali** (`wlan0`
+tidak ada, scan kosong, toggle WiFi mati sendiri).
+
+Setelah memasang kernel/modul baru, **selalu** jalankan:
+
+```
+depmod -a
+grep ath10k /lib/modules/$(uname -r)/modules.dep   # harus ada dependency-nya
+```
+
+Baris yang benar terlihat seperti:
+
+```
+.../ath10k_snoc.ko.zst: .../ath10k_core.ko.zst .../mac80211.ko.zst ...
+```
+
+Bukan:
+
+```
+.../ath10k_snoc.ko.zst:
+```
+
 ## Catatan penting
 
 - Kernel ini pakai `CONFIG_CFI=y` (kCFI). **Kernel dan modul harus dibuild oleh compiler yang sama persis.** Karena itu workflow membangun kernel **dan** modul dalam satu job (satu image `alpine:edge`, satu clang).

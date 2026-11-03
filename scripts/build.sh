@@ -40,7 +40,11 @@ echo "builddir: $BUILD"
 cd "$BUILD"
 
 echo "== apply patch =="
-patch -p1 --batch --forward < "$WORK"/patches/0001-*.patch
+ls -la "$WORK/patches" "$WORK/config" || true
+PATCH="$(find "$WORK/patches" -maxdepth 1 -name '*.patch' | sort | head -1)"
+echo "patch: $PATCH"
+[ -n "$PATCH" ] || { echo "no patch found" >&2; exit 1; }
+patch -p1 --batch --forward < "$PATCH"
 
 echo "== config =="
 cp -v "$WORK/config/config-${FLAVOR}.aarch64" .config
@@ -57,6 +61,13 @@ make ARCH=arm64 LLVM=1 \
 
 echo "== install dtbs =="
 make ARCH=arm64 LLVM=1 INSTALL_DTBS_PATH="$OUT/dtbs" dtbs_install
+
+echo "== depmod (guard against empty dependency lists) =="
+MODDIR="$OUT/modroot/usr/lib/modules/${KVER}-sdm660"
+depmod -b "$OUT/modroot" "${KVER}-sdm660"
+grep -E 'ath10k_snoc\.ko[^:]*: .*ath10k_core\.ko' "$MODDIR/modules.dep" \
+	&& echo "depmod OK" \
+	|| { echo "ERROR: modules.dep incomplete (empty deps)" >&2; exit 1; }
 
 echo "== collect =="
 cp -v arch/arm64/boot/Image.gz "$OUT/vmlinuz"

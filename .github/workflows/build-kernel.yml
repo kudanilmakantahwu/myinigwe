@@ -31,6 +31,7 @@ jobs:
 
       - name: Build inside Alpine
         run: |
+          ls -la "$PWD" "$PWD/patches" "$PWD/config"
           mkdir -p out
           docker run --rm \
             -v "$PWD:/work" \
