@@ -12,16 +12,4 @@ Penomoran ngikutin urutan commit di `sdm660-mainline/linux`.
 
 Sumber: Fabricio Akio / Dmitry Baryshkov (FROMLIST), `sdm660-mainline/linux` dan linux-wireless.
 
-## Cara pakai
 
-1. Jalanin workflow `build-kernel`, download artifact `linux-7.0.14-sdm660`
-2. Bikin `boot.img` pakai `scripts/mkboot.py`
-3. Tes dulu: `fastboot boot boot-7.0.14-sdm660.img`
-4. Kalau aman: `fastboot flash boot boot-7.0.14-sdm660.img`
-5. Pasang semua modul ke rootfs, jalanin `depmod -a`, dan repack initramfs pakai `msm.ko` dari build yang sama
-
-## Catatan
-
-- Kernel dan modul harus dari build yang sama (`CONFIG_CFI=y` + BTF). Modul dari build lain ditolak dengan error BTF `-22` / `-40`
-- Kalau `modules.dep` dependency-nya kosong, WiFi nggak muncul. Jalanin `depmod -a`, terus cek `grep ath10k /lib/modules/$(uname -r)/modules.dep`
-- `mkinitfs` di HP langsung nulis `boot.img` ke partisi boot tiap initramfs di-generate. Simpan salinan `boot.img` yang terbukti boot buat rollback
