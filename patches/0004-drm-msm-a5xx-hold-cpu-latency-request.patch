@@ -1,0 +1,142 @@
+From b63149ee8311fd82497c2ba6934fbcd5de6a7fed Mon Sep 17 00:00:00 2001
+From: Fabricio Akio <fabricioakio@gmail.com>
+Date: Mon, 19 Oct 2026 23:05:09 -0300
+Subject: [PATCH] FROMLIST drm/msm/a5xx: Hold a CPU latency request while the
+ GPU is powered
+
+On SDM630 the GPU was observed to stop executing while the SoC is in
+system-level power collapse, and to continue once the SoC wakes. Its
+interrupts have no wakeup route through the MPM, so it cannot wake the
+SoC itself. A submission overlapping such a state would stall until a
+CPU wakes, and a stall longer than the hang detector's threshold makes
+the driver recover the GPU, which can lose a frame.
+
+Qualcomm's downstream driver holds a CPU latency request while the GPU
+is active, qcom,pm-qos-active-latency, which keeps the CPU idle
+governors out of cluster and system-level power collapse. Do the same:
+take the request when the GPU resumes and drop it when it suspends, so
+those states remain available once the GPU has gone idle, and on
+destroy, which unbind reaches even when suspending the GPU failed. The
+limit is a per-GPU catalog value, downstream's for each SoC: 424 us
+for the A508 in SDM630, and 518 us for the A509 in SDM636 and the A512
+in SDM660.
+
+Signed-off-by: Fabricio Akio <fabricioakio@gmail.com>
+---
+ drivers/gpu/drm/msm/adreno/a5xx_catalog.c |  3 +++
+ drivers/gpu/drm/msm/adreno/a5xx_gpu.c     | 13 +++++++++++++
+ drivers/gpu/drm/msm/adreno/a5xx_gpu.h     |  4 ++++
+ drivers/gpu/drm/msm/adreno/adreno_gpu.h   |  5 +++++
+ 4 files changed, 25 insertions(+)
+
+diff --git a/drivers/gpu/drm/msm/adreno/a5xx_catalog.c b/drivers/gpu/drm/msm/adreno/a5xx_catalog.c
+index 8086b1937c17b9..4ef5f8bbbd0f18 100644
+--- a/drivers/gpu/drm/msm/adreno/a5xx_catalog.c
++++ b/drivers/gpu/drm/msm/adreno/a5xx_catalog.c
+@@ -55,6 +55,7 @@ static const struct adreno_info a5xx_gpus[] = {
+ 		 * the GDSC which appears to make it grumpy
+ 		 */
+ 		.inactive_period = 250,
++		.cpu_latency_us = 424,
+ 		.quirks = ADRENO_QUIRK_LMLOADKILL_DISABLE,
+ 		.funcs = &a5xx_gpu_funcs,
+ 		.zapfw = "a508_zap.mdt",
+@@ -78,6 +79,7 @@ static const struct adreno_info a5xx_gpus[] = {
+ 		 * the GDSC which appears to make it grumpy
+ 		 */
+ 		.inactive_period = 250,
++		.cpu_latency_us = 518,
+ 		.quirks = ADRENO_QUIRK_LMLOADKILL_DISABLE,
+ 		.funcs = &a5xx_gpu_funcs,
+ 		/* Adreno 509 uses the same ZAP as 512 */
+@@ -120,6 +122,7 @@ static const struct adreno_info a5xx_gpus[] = {
+ 		 * the GDSC which appears to make it grumpy
+ 		 */
+ 		.inactive_period = 250,
++		.cpu_latency_us = 518,
+ 		.quirks = ADRENO_QUIRK_LMLOADKILL_DISABLE,
+ 		.funcs = &a5xx_gpu_funcs,
+ 		.zapfw = "a512_zap.mdt",
+diff --git a/drivers/gpu/drm/msm/adreno/a5xx_gpu.c b/drivers/gpu/drm/msm/adreno/a5xx_gpu.c
+index 500ed2fc84ab62..432d32d9715693 100644
+--- a/drivers/gpu/drm/msm/adreno/a5xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a5xx_gpu.c
+@@ -1060,6 +1060,10 @@ static void a5xx_destroy(struct msm_gpu *gpu)
+ 		drm_gem_object_put(a5xx_gpu->shadow_bo);
+ 	}
+ 
++	/* Still held if suspending the GPU failed before it was destroyed */
++	if (cpu_latency_qos_request_active(&a5xx_gpu->pm_qos_req))
++		cpu_latency_qos_remove_request(&a5xx_gpu->pm_qos_req);
++
+ 	adreno_gpu_cleanup(adreno_gpu);
+ 	kfree(a5xx_gpu);
+ }
+@@ -1355,6 +1359,7 @@ static void a5xx_dump(struct msm_gpu *gpu)
+ static int a5xx_pm_resume(struct msm_gpu *gpu)
+ {
+ 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
++	struct a5xx_gpu *a5xx_gpu = to_a5xx_gpu(adreno_gpu);
+ 	int ret;
+ 
+ 	/* Turn on the core power */
+@@ -1362,6 +1367,11 @@ static int a5xx_pm_resume(struct msm_gpu *gpu)
+ 	if (ret)
+ 		return ret;
+ 
++	if (adreno_gpu->info->cpu_latency_us &&
++	    !cpu_latency_qos_request_active(&a5xx_gpu->pm_qos_req))
++		cpu_latency_qos_add_request(&a5xx_gpu->pm_qos_req,
++					    adreno_gpu->info->cpu_latency_us);
++
+ 	/*
+ 	 * The GX power domain is not necessarily switched off while we are
+ 	 * suspended: on SDM630, SDM660 and MSM8998 it follows the GPU's SMMU
+@@ -1445,6 +1455,9 @@ static int a5xx_pm_suspend(struct msm_gpu *gpu)
+ 	if (ret)
+ 		return ret;
+ 
++	if (cpu_latency_qos_request_active(&a5xx_gpu->pm_qos_req))
++		cpu_latency_qos_remove_request(&a5xx_gpu->pm_qos_req);
++
+ 	if (a5xx_gpu->has_whereami)
+ 		for (i = 0; i < gpu->nr_rings; i++)
+ 			a5xx_gpu->shadow[i] = 0;
+diff --git a/drivers/gpu/drm/msm/adreno/a5xx_gpu.h b/drivers/gpu/drm/msm/adreno/a5xx_gpu.h
+index fb05f1ca3e81a2..07a36c05be2553 100644
+--- a/drivers/gpu/drm/msm/adreno/a5xx_gpu.h
++++ b/drivers/gpu/drm/msm/adreno/a5xx_gpu.h
+@@ -4,6 +4,8 @@
+ #ifndef __A5XX_GPU_H__
+ #define __A5XX_GPU_H__
+ 
++#include <linux/pm_qos.h>
++
+ #include "adreno_gpu.h"
+ 
+ /* Bringing over the hack from the previous targets */
+@@ -48,6 +50,8 @@ struct a5xx_gpu {
+ 
+ 	/* True if the microcode supports the WHERE_AM_I opcode */
+ 	bool has_whereami;
++
++	struct pm_qos_request pm_qos_req;
+ };
+ 
+ #define to_a5xx_gpu(x) container_of(x, struct a5xx_gpu, base)
+diff --git a/drivers/gpu/drm/msm/adreno/adreno_gpu.h b/drivers/gpu/drm/msm/adreno/adreno_gpu.h
+index 1f201322cb6eab..705445d1165c4f 100644
+--- a/drivers/gpu/drm/msm/adreno/adreno_gpu.h
++++ b/drivers/gpu/drm/msm/adreno/adreno_gpu.h
+@@ -118,6 +118,11 @@ struct adreno_info {
+ 	const struct adreno_gpu_funcs *funcs;
+ 	const char *zapfw;
+ 	u32 inactive_period;
++	/**
++	 * @cpu_latency_us: CPU latency limit to hold while the GPU is
++	 * powered, in microseconds, or 0 for none
++	 */
++	u32 cpu_latency_us;
+ 	union {
+ 		const struct a6xx_info *a6xx;
+ 	};
