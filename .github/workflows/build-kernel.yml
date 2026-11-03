@@ -17,10 +17,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
       - name: Show toolchain plan
         run: |
           echo "kernel: 7.0.14-sdm660 (sdm660-mainline/linux tag v7.0.14-sdm660)"
-          echo "builder: alpine:edge, clang23 (kCFI hashes depend on the exact compiler)"
+          echo "builder: alpine:edge, clang/lld/llvm (unversioned) via LLVM=1"
+          echo "note: kernel + modules are built in one shot so kCFI type hashes match"
 
       - name: Build inside Alpine
         run: |

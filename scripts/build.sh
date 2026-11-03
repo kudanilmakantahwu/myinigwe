@@ -17,11 +17,11 @@ OUT="$WORK/out"
 echo "== toolchain =="
 apk add --no-cache \
 	bash bc bison build-base ccache \
-	clang23 lld23 llvm23 \
-	dtc elfutils-dev findutils flex kmod linux-headers \
+	clang lld llvm \
+	curl dtc elfutils-dev findutils flex kmod linux-headers \
 	openssl-dev pahole patch perl python3 tar xz zstd
-clang-23 --version | head -1
-ld.lld-23 --version | head -1
+clang --version | head -1
+ld.lld --version | head -1
 
 mkdir -p "$SRC" "$OUT"
 cd "$SRC"
@@ -46,17 +46,17 @@ echo "== config =="
 cp -v "$WORK/config/config-${FLAVOR}.aarch64" .config
 
 echo "== build =="
-make -j"$(nproc)" ARCH=arm64 LLVM=-23 \
+make -j"$(nproc)" ARCH=arm64 LLVM=1 \
 	KBUILD_BUILD_VERSION=1 all Image.gz modules
 
 echo "== install modules =="
-make ARCH=arm64 LLVM=-23 \
+make ARCH=arm64 LLVM=1 \
 	INSTALL_MOD_PATH="$OUT/modroot" \
 	INSTALL_MOD_STRIP=1 \
 	modules_install
 
 echo "== install dtbs =="
-make ARCH=arm64 LLVM=-23 INSTALL_DTBS_PATH="$OUT/dtbs" dtbs_install
+make ARCH=arm64 LLVM=1 INSTALL_DTBS_PATH="$OUT/dtbs" dtbs_install
 
 echo "== collect =="
 cp -v arch/arm64/boot/Image.gz "$OUT/vmlinuz"
