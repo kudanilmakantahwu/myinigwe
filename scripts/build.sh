@@ -19,7 +19,7 @@ apk add --no-cache \
 	bash bc bison build-base ccache \
 	clang lld llvm \
 	curl dtc elfutils-dev findutils flex kmod linux-headers \
-	openssl-dev pahole patch perl python3 tar xz zstd
+	openssl openssl-dev pahole patch perl python3 tar xz zstd
 clang --version | head -1
 ld.lld --version | head -1
 
