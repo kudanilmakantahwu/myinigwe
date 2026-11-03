@@ -11,7 +11,8 @@ Semua build dijalankan di dalam container `alpine:edge` (lewat `docker run`), ja
 | `scripts/build.sh` | Script build utama (jalan di dalam `alpine:edge`) |
 | `config/config-postmarketos-qcom-sdm660.aarch64` | Kernel config dari pmaports (`device/testing/linux-postmarketos-qcom-sdm660`) |
 | `patches/0001-drm-msm-a5xx-write-cp-rb-wptr-under-preempt-lock.patch` | Patch race `CP_RB_WPTR` pada a5xx (Adreno 512) |
-| `patches/0002-drm-msm-a5xx-reset-gpu-on-resume.patch` | **Patch utama**: reset GPU saat resume (fix hang `rptr/wptr = 23/C` di SDM660) |
+| `patches/0002-drm-msm-a5xx-reset-gpu-on-resume.patch` | **Patch utama GPU**: reset GPU saat resume (fix hang `rptr/wptr = 23/C` di SDM660) |
+| `patches/0003-wifi-ath10k-dont-reset-txbf-on-disassociation.patch` | **Patch WiFi**: fix crash firmware WCN3990 setiap disconnect |
 | `.github/workflows/build-kernel.yml` | Workflow GitHub Actions |
 
 ## Kenapa patch ini
@@ -51,6 +52,33 @@ mundur. Patch memindahkan penulisan register ke **dalam** lock. Terbukti
 membantu di A508 (SDM630), **tidak cukup** untuk lavender (A512) — makanya
 patch 0002 tetap diperlukan.
 
+### 0003 — WiFi mati total setiap disconnect (crash WCN3990)
+
+Firmware WCN3990 (`WLAN.HL.1.0.1.c2-00498`) **crash setiap kali vdev di-set
+TxBF saat vdev tidak punya peer AP**. `ath10k_bss_disassoc()` melakukan itu
+tepat setelah peer dihapus, jadi crash terjadi di **setiap disconnect**:
+
+```
+qcom-q6v5-mss 4080000.remoteproc: fatal error received:
+  err_qdi.c:459:EX:wlan_process:1:WLAN RT:2083:PC=b00c87e0
+remoteproc remoteproc1: crash detected in 4080000.remoteproc: type fatal error
+wlan0: failed to remove key (0, ...) from hardware (-110)
+```
+
+Setelah itu `ath10k` tidak bisa probe ulang (walau modul di-`rmmod`/`modprobe`),
+`wlan0` tetap DOWN, scan gagal (`Scanning not allowed while unavailable`), dan
+satu-satunya jalan adalah **reboot**. Ini sangat terasa kalau ada 2 router/AP:
+pindah ruangan → disconnect → WiFi mati.
+
+Fix: hapus pemanggilan `ath10k_mac_vif_recalc_txbf()` di
+`ath10k_bss_disassoc()`. Tidak perlu di-reset di situ karena
+`ath10k_bss_assoc()` akan men-set TxBF lagi dari capability AP berikutnya
+sebelum vdev dinyalakan.
+
+Sumber: Fabricio Akio, FROMLIST, `[PATCH] wifi: ath10k: don't reset TxBF on
+disassociation` (11 Okt 2026). Belum ada di upstream `torvalds/linux`,
+`linux-next`, maupun `wireless-testing`.
+
 ## Cara pakai
 
 1. Jalankan workflow **build-kernel** (manual via *Run workflow*, atau otomatis saat push ke `main`).
@@ -67,6 +95,11 @@ patch 0002 tetap diperlukan.
    ```
    fastboot flash boot boot-7.0.14-sdm660.img
    ```
+
+6. Pasang juga **semua modul** ke rootfs (bukan cuma initramfs), lalu `depmod -a`.
+   Fix WiFi ada di `ath10k_core`/`ath10k_snoc` yang dimuat dari rootfs, sedangkan
+   `msm` dimuat dari initramfs (jadi initramfs juga harus di-repack dengan `msm.ko`
+   dari build yang sama).
 
 ## Cacat yang perlu diwaspadai: `modules.dep` kosong
 
@@ -107,4 +140,5 @@ Bukan:
 
 - Kernel: <https://github.com/sdm660-mainline/linux> tag `v7.0.14-sdm660`
 - Config & packaging: pmaports `device/testing/linux-postmarketos-qcom-sdm660`
-- Patch: Fabricio Akio, ML linux-kernel (1 Nov 2026)
+- Patch GPU: Fabricio Akio, ML linux-kernel (19 Okt 2026)
+- Patch WiFi: Fabricio Akio, ML linux-wireless (11 Okt 2026)
